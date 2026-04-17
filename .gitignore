@@ -1,0 +1,14 @@
+# Environment / secrets
+.env
+
+# Generated model and data files
+model.pkl
+*.csv
+portfolio.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
