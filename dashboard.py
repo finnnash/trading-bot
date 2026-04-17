@@ -12,7 +12,7 @@ import pandas as pd
 from flask import Flask, render_template_string, jsonify
 from textblob import TextBlob
 
-# ── ML model (optional, loaded once) ──────────────────────────────────────────
+# load ML model once at startup
 try:
     import joblib
     from ml_model import build_features, FEATURE_COLS
@@ -24,7 +24,7 @@ except Exception:
 
 app = Flask(__name__)
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# config
 TICKERS        = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "JPM", "JNJ", "WMT", "KO", "V"]
 STARTING_CASH  = 100_000.0
 SHORT_WINDOW   = 10
@@ -38,7 +38,7 @@ _http.headers.update({"User-Agent": "Mozilla/5.0 (compatible; dashboard/1.0)"})
 _sentiment_cache: dict[str, tuple[float, float]] = {}   # ticker -> (score, ts)
 
 
-# ── Data helpers ───────────────────────────────────────────────────────────────
+# data helpers
 
 def load_portfolio() -> dict:
     if os.path.exists(PORTFOLIO_FILE):
@@ -73,10 +73,7 @@ def parse_reason(reason: str) -> dict:
 
 
 def reconstruct_history(trades: list[dict]) -> tuple[list[str], list[float]]:
-    """
-    Replay trades to get a (labels, portfolio_values) time series.
-    Returns two parallel lists; first point is always "Start"/$100k.
-    """
+    """Replay trades to build a portfolio value time series. First point is always Start/$100k."""
     cash       = STARTING_CASH
     positions  = {}   # ticker -> (shares, avg_cost)
     last_price = {}   # ticker -> last seen price
@@ -129,7 +126,7 @@ def compute_stats(trades: list[dict], portfolio: dict,
     port_val  = cash + equity
     total_ret = (port_val - STARTING_CASH) / STARTING_CASH * 100
 
-    # Sharpe & max drawdown from reconstructed history
+    # Sharpe and max drawdown from reconstructed history
     sharpe = max_dd = 0.0
     if len(port_values) >= 3:
         s   = pd.Series(port_values)
@@ -171,10 +168,7 @@ def compute_stats(trades: list[dict], portfolio: dict,
 def fetch_spy_normalized(start_label: str | None,
                          port_labels: list[str],
                          port_values: list[float]) -> tuple[list[str], list[float]]:
-    """
-    Return (labels, spy_values) where spy is indexed to 100 at the first
-    portfolio trade date.  Falls back to last-60-days if no trades.
-    """
+    """Fetch SPY and normalize to 100 at first trade date. Falls back to last 60 days if no trades."""
     try:
         url  = ("https://query1.finance.yahoo.com/v8/finance/chart/"
                 "SPY?interval=1d&range=2y")
@@ -188,11 +182,10 @@ def fetch_spy_normalized(start_label: str | None,
             index=pd.to_datetime(ts, unit="s", utc=True).tz_localize(None).normalize()
         ).dropna()
 
-        # Anchor SPY to 100 at the date of the first trade (or 60 days ago)
+        # anchor SPY to 100 at the first trade date (year isn't in the label, so we infer it)
         if len(port_labels) > 1:
             try:
                 anchor_dt = datetime.strptime(port_labels[1], "%b %d %H:%M")
-                # Year not in label — use current year, handle Dec/Jan wrap
                 anchor_dt = anchor_dt.replace(year=datetime.now().year)
             except Exception:
                 anchor_dt = datetime.now() - timedelta(days=60)
@@ -207,7 +200,7 @@ def fetch_spy_normalized(start_label: str | None,
         spy_labels   = [d.strftime("%b %d") for d in spy_after.index]
         spy_norm     = [round(float(v) / base * 100, 4) for v in spy_after["Close"]]
 
-        # Normalise portfolio to 100 at same anchor
+        # normalize portfolio to 100 at same anchor
         if len(port_values) > 1:
             port_base   = port_values[1]
             port_norm   = [round(v / port_base * 100, 4) for v in port_values[1:]]
@@ -222,7 +215,7 @@ def fetch_spy_normalized(start_label: str | None,
         return [], [], port_labels, port_values
 
 
-# ── Live signal helpers ────────────────────────────────────────────────────────
+# live signal helpers
 
 def _fetch_5m(ticker: str) -> pd.DataFrame | None:
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -313,7 +306,7 @@ def _rss_sentiment(ticker: str) -> tuple[float, int]:
         return 0.0, 0
 
 
-# ── API routes ─────────────────────────────────────────────────────────────────
+# routes
 
 @app.route("/api/data")
 def api_data():
@@ -421,7 +414,7 @@ def api_signals():
     return jsonify(signals=results, updated=datetime.now().strftime("%H:%M:%S"))
 
 
-# ── HTML template ──────────────────────────────────────────────────────────────
+# HTML template
 
 TEMPLATE = r"""
 <!DOCTYPE html>
@@ -450,7 +443,7 @@ body { background: var(--bg); color: var(--text);
        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        min-height: 100vh; font-size: 14px; }
 
-/* ── Header ── */
+/* header */
 header {
   background: var(--surface); border-bottom: 1px solid var(--border);
   padding: 14px 28px; display: flex; align-items: center; gap: 14px;
@@ -470,11 +463,11 @@ header h1 { font-size: 1rem; font-weight: 600; letter-spacing:.03em; }
 }
 #refresh-btn:hover { border-color: var(--blue); color: var(--blue); }
 
-/* ── Layout ── */
+/* layout */
 main { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
 section { margin-bottom: 22px; }
 
-/* ── Cards ── */
+/* cards */
 .cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
 @media(max-width:1100px){ .cards{grid-template-columns:repeat(3,1fr)} }
 @media(max-width:640px){ .cards{grid-template-columns:repeat(2,1fr)} }
@@ -491,20 +484,20 @@ section { margin-bottom: 22px; }
 .down { color: var(--red);   }
 .neu  { color: var(--blue);  }
 
-/* ── Panel (generic surface box) ── */
+/* panel */
 .panel { background: var(--surface); border: 1px solid var(--border);
          border-radius: 10px; padding: 20px 22px; }
 .panel-title { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
                color: var(--muted); margin-bottom: 16px; }
 
-/* ── Chart ── */
+/* chart */
 .chart-wrap { position: relative; height: 280px; }
 
-/* ── Two-column grid ── */
+/* two-column grid */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media(max-width:900px){ .two-col{grid-template-columns:1fr} }
 
-/* ── Tables ── */
+/* tables */
 .tbl-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; }
 th {
@@ -516,7 +509,7 @@ td { padding: 9px 12px; font-size: .82rem; border-bottom: 1px solid var(--border
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #1c2128; }
 
-/* ── Pills ── */
+/* pills */
 .pill { display:inline-block; padding:2px 9px; border-radius:20px;
         font-size:.68rem; font-weight:700; letter-spacing:.04em; }
 .pill-buy    { background:#1a2f4e; color:var(--blue);   }
@@ -528,12 +521,12 @@ tbody tr:hover { background: #1c2128; }
 .pill-down   { background:#2d1a1a; color:var(--red);    }
 .pill-na     { background:#1e1e2e; color:var(--muted);  }
 
-/* ── Sentiment bar ── */
+/* sentiment bar */
 .sent-bar { display:flex; align-items:center; gap:6px; }
 .bar-track { flex:1; height:4px; background:var(--border2); border-radius:2px; }
 .bar-fill  { height:100%; border-radius:2px; }
 
-/* ── Empty / loading ── */
+/* empty / loading states */
 .empty { text-align:center; padding:36px; color:var(--muted); font-size:.82rem; }
 .loading { display:flex; align-items:center; justify-content:center;
            gap:8px; padding:20px; color:var(--muted); font-size:.82rem; }
@@ -559,7 +552,7 @@ footer { text-align:center; padding:20px; color:#484f58; font-size:.72rem; }
 
 <main>
 
-<!-- ── Stats cards ── -->
+<!-- stats cards -->
 <section>
   <div class="cards">
     <div class="card">
@@ -595,7 +588,7 @@ footer { text-align:center; padding:20px; color:#484f58; font-size:.72rem; }
   </div>
 </section>
 
-<!-- ── Chart ── -->
+<!-- chart -->
 <section class="panel">
   <div class="panel-title">Portfolio vs S&amp;P 500 — normalized to 100 at first trade</div>
   <div class="chart-wrap">
@@ -603,7 +596,7 @@ footer { text-align:center; padding:20px; color:#484f58; font-size:.72rem; }
   </div>
 </section>
 
-<!-- ── Signals + Positions ── -->
+<!-- signals + positions -->
 <section class="two-col">
 
   <div class="panel">
@@ -624,7 +617,7 @@ footer { text-align:center; padding:20px; color:#484f58; font-size:.72rem; }
 
 </section>
 
-<!-- ── Trade History ── -->
+<!-- trade history -->
 <section class="panel">
   <div class="panel-title">Trade History
     <span style="font-size:.68rem;color:var(--muted);margin-left:8px" id="trade-count"></span>
@@ -640,7 +633,7 @@ footer { text-align:center; padding:20px; color:#484f58; font-size:.72rem; }
 <script>
 let perfChart = null;
 
-// ── Chart setup ───────────────────────────────────────────────────────────────
+// chart setup
 function buildChart(portLabels, portValues, spyLabels, spyValues) {
   const ctx = document.getElementById("perfChart").getContext("2d");
 
@@ -661,9 +654,7 @@ function buildChart(portLabels, portValues, spyLabels, spyValues) {
         {
           label: "Portfolio",
           data: (() => {
-            // Align portfolio points to SPY labels (sparse join by index)
             if (!spyLabels.length) return portValues;
-            // Just overlay — both series use their own x-axis via separate datasets
             return portValues;
           })(),
           borderColor: portCol,
@@ -676,7 +667,6 @@ function buildChart(portLabels, portValues, spyLabels, spyValues) {
           yAxisID: "y",
           xAxisID: "x",
           parsing: false,
-          // Use raw index alignment — works when both series cover same period
         },
         {
           label: "SPY",
@@ -730,7 +720,7 @@ function buildChart(portLabels, portValues, spyLabels, spyValues) {
   });
 }
 
-// ── Render stats ──────────────────────────────────────────────────────────────
+// render stats
 function renderStats(s) {
   const fmt  = v => (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
   const fmtD = v => (v >= 0 ? "+" : "-") + "$" + Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:2});
@@ -763,7 +753,7 @@ function renderStats(s) {
     `${s.buys} buys · ${s.sells} sells`;
 }
 
-// ── Render trade table ────────────────────────────────────────────────────────
+// render trade table
 function renderTrades(trades) {
   const el = document.getElementById("trades-body");
   document.getElementById("trade-count").textContent =
@@ -817,7 +807,7 @@ function renderTrades(trades) {
     </table>`;
 }
 
-// ── Render positions ──────────────────────────────────────────────────────────
+// render positions
 function renderPositions(positions) {
   const el = document.getElementById("positions-body");
   if (!positions.length) {
@@ -838,7 +828,7 @@ function renderPositions(positions) {
     </table>`;
 }
 
-// ── Render signal table ───────────────────────────────────────────────────────
+// render signal table
 function renderSignals(signals) {
   const el = document.getElementById("signals-body");
   document.getElementById("sig-updated").textContent =
@@ -894,7 +884,7 @@ function renderSignals(signals) {
     </table></div>`;
 }
 
-// ── Refresh orchestration ─────────────────────────────────────────────────────
+// refresh
 async function refreshData() {
   try {
     const res  = await fetch("/api/data");
@@ -927,11 +917,11 @@ async function refreshSignals() {
 
 async function refreshAll() {
   await refreshData();
-  refreshSignals();   // fire and forget — slow external calls
+  refreshSignals();   // fire and forget
   resetCountdown();
 }
 
-// ── Countdown timer ───────────────────────────────────────────────────────────
+// countdown timer
 let _secsLeft = 300;
 let _countdownTimer = null;
 
@@ -947,7 +937,7 @@ function tickCountdown() {
   if (_secsLeft === 0) refreshAll();
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// boot
 refreshAll();
 _countdownTimer = setInterval(tickCountdown, 1000);
 </script>

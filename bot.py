@@ -1,8 +1,4 @@
-"""
-bot.py — Three-signal paper trading bot
-Signals : MA Crossover  →  ML Model  →  RSS Sentiment
-Trade executes only when ALL THREE agree.
-"""
+"""Three-signal paper trading bot. Trades only when MA + ML + sentiment all agree."""
 
 import json
 import csv
@@ -18,7 +14,7 @@ import pandas as pd
 import schedule
 from textblob import TextBlob
 
-# ── ML model (loaded once at startup) ─────────────────────────────────────────
+# load ML model once at startup
 try:
     import joblib
     from ml_model import build_features, FEATURE_COLS
@@ -29,14 +25,14 @@ except Exception as _ml_err:
     _ml_ready  = False
     print(f"  [ML] WARNING: could not load model.pkl ({_ml_err}). ML signal disabled.")
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# config
 TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "JPM", "JNJ", "WMT", "KO", "V"]
 
 STARTING_CASH    = 100_000.0
-SHORT_WINDOW     = 10          # fast MA period
-LONG_WINDOW      = 30          # slow MA period
-MAX_POSITION_PCT = 0.20        # max 20% of portfolio per stock
-CASH_BUFFER_PCT  = 0.05        # keep 5% cash reserve at all times
+SHORT_WINDOW     = 10          # fast MA
+LONG_WINDOW      = 30          # slow MA
+MAX_POSITION_PCT = 0.20        # max 20% per stock
+CASH_BUFFER_PCT  = 0.05        # never go below 5% cash
 
 SENTIMENT_BUY_THRESHOLD  =  0.2
 SENTIMENT_SELL_THRESHOLD = -0.2
@@ -47,10 +43,10 @@ TRADES_FILE    = "trades.csv"
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"})
-_sentiment_cache: dict[str, tuple[float, int, float]] = {}  # {ticker: (score, n_headlines, ts)}
+_sentiment_cache: dict[str, tuple[float, int, float]] = {}  # ticker -> (score, n_headlines, ts)
 
 
-# ── Market hours ───────────────────────────────────────────────────────────────
+# market hours
 
 def market_is_open() -> bool:
     et  = zoneinfo.ZoneInfo("America/New_York")
@@ -60,7 +56,7 @@ def market_is_open() -> bool:
     return dtime(9, 30) <= now.time() < dtime(16, 0)
 
 
-# ── Portfolio ──────────────────────────────────────────────────────────────────
+# portfolio
 
 def load_portfolio() -> dict:
     if os.path.exists(PORTFOLIO_FILE):
@@ -84,7 +80,7 @@ def max_spend(portfolio: dict, prices: dict) -> float:
     return max(portfolio["cash"] - total * CASH_BUFFER_PCT, 0.0)
 
 
-# ── Trade log ──────────────────────────────────────────────────────────────────
+# trade logging
 
 def log_trade(action: str, ticker: str, shares: float, price: float, reason: str) -> None:
     exists = os.path.exists(TRADES_FILE)
@@ -97,7 +93,7 @@ def log_trade(action: str, ticker: str, shares: float, price: float, reason: str
                     round(shares * price, 4), reason])
 
 
-# ── Signal 1: MA Crossover (5-minute bars) ─────────────────────────────────────
+# signal 1: MA crossover on 5m bars
 
 def fetch_5m(ticker: str) -> pd.DataFrame | None:
     url = (
@@ -120,10 +116,7 @@ def fetch_5m(ticker: str) -> pd.DataFrame | None:
 
 
 def ma_signal(df: pd.DataFrame) -> tuple[float, float, float, str]:
-    """
-    Returns (price, ma_short, ma_long, direction).
-    direction: 'BUY' | 'SELL' | 'HOLD'
-    """
+    """Returns (price, ma_short, ma_long, direction). direction is BUY/SELL/HOLD."""
     close    = df["Close"].squeeze()
     ma_s     = float(close.rolling(SHORT_WINDOW).mean().iloc[-1])
     ma_l     = float(close.rolling(LONG_WINDOW).mean().iloc[-1])
@@ -131,7 +124,7 @@ def ma_signal(df: pd.DataFrame) -> tuple[float, float, float, str]:
     prev_s   = float(close.rolling(SHORT_WINDOW).mean().iloc[-2])
     prev_l   = float(close.rolling(LONG_WINDOW).mean().iloc[-2])
 
-    # Require an actual crossover on the last bar (not just above/below)
+    # must actually cross, not just be above/below
     crossed_up = (prev_s <= prev_l) and (ma_s > ma_l)
     crossed_dn = (prev_s >= prev_l) and (ma_s < ma_l)
 
@@ -145,10 +138,10 @@ def ma_signal(df: pd.DataFrame) -> tuple[float, float, float, str]:
     return price, ma_s, ma_l, direction
 
 
-# ── Signal 2: ML Model (daily bars) ───────────────────────────────────────────
+# signal 2: ML model on daily bars
 
 def fetch_daily_for_ml(ticker: str) -> pd.DataFrame | None:
-    """90 days of daily Close+Volume needed to compute ML features."""
+    """6mo of daily Close+Volume needed for ML features."""
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         f"?interval=1d&range=6mo"
@@ -170,10 +163,7 @@ def fetch_daily_for_ml(ticker: str) -> pd.DataFrame | None:
 
 
 def ml_signal(ticker: str, df_daily: pd.DataFrame) -> tuple[int | None, float | None]:
-    """
-    Returns (prediction, probability_up).
-    prediction: 1=UP, 0=DOWN, None=unavailable
-    """
+    """Returns (prediction, prob_up). 1=UP, 0=DOWN, None if unavailable."""
     if not _ml_ready or ticker not in _ml_models:
         return None, None
     try:
@@ -190,13 +180,10 @@ def ml_signal(ticker: str, df_daily: pd.DataFrame) -> tuple[int | None, float | 
         return None, None
 
 
-# ── Signal 3: RSS Sentiment (Yahoo Finance headlines + TextBlob) ────────────────
+# signal 3: RSS sentiment via Yahoo Finance headlines + TextBlob
 
 def rss_sentiment(ticker: str) -> tuple[float, int]:
-    """
-    Fetch Yahoo Finance RSS headlines, score with TextBlob.
-    Returns (avg_polarity, n_headlines). Cached for 30 minutes.
-    """
+    """Grab Yahoo Finance headlines, score with TextBlob. Cached 30 min."""
     now = time.time()
     if ticker in _sentiment_cache:
         score, n, ts = _sentiment_cache[ticker]
@@ -228,7 +215,7 @@ def rss_sentiment(ticker: str) -> tuple[float, int]:
         return 0.0, 0
 
 
-# ── Signal display helpers ─────────────────────────────────────────────────────
+# display helpers
 
 def _sent_label(score: float) -> str:
     if score >=  0.5: return "VERY POSITIVE"
@@ -248,7 +235,7 @@ def _tick(ok: bool) -> str:
     return "✓" if ok else "✗"
 
 
-# ── Core strategy loop ─────────────────────────────────────────────────────────
+# main strategy loop
 
 def run_strategy() -> None:
     W = 62
@@ -264,7 +251,7 @@ def run_strategy() -> None:
     portfolio      = load_portfolio()
     current_prices = {}
 
-    # ── Fetch 5m data & compute MA signals for all tickers ────────────────────
+    # fetch 5m bars and MA signals for all tickers
     ma_data = {}   # ticker -> (price, ma_s, ma_l, direction, df_5m)
     for ticker in TICKERS:
         df = fetch_5m(ticker)
@@ -276,7 +263,7 @@ def run_strategy() -> None:
 
     total = portfolio_value(portfolio, current_prices)
 
-    # ── Process each ticker ───────────────────────────────────────────────────
+    # process each ticker
     for ticker in TICKERS:
         if ticker not in ma_data:
             print(f"\n  {ticker:<6}  — no data")
@@ -292,14 +279,14 @@ def run_strategy() -> None:
               f"held={held_shares} sh")
         print(f"  {'─'*58}")
 
-        # ── HOLD: no crossover → skip signal evaluation ───────────────────────
+        # no crossover — skip
         if ma_dir == "HOLD":
             bias = "above" if ma_s > ma_l else "below"
             print(f"  [1] MA         : HOLD  (MA{SHORT_WINDOW} {bias} MA{LONG_WINDOW}, no crossover)")
             print(f"  └─ No trade\n")
             continue
 
-        # ── Crossover detected: evaluate all three signals ────────────────────
+        # crossover detected — check all three signals
         ma_ok = (ma_dir == "BUY") or (ma_dir == "SELL" and held_shares > 0)
 
         # Signal 2: ML
@@ -322,7 +309,7 @@ def run_strategy() -> None:
             (ma_dir == "SELL" and sent_score <  SENTIMENT_SELL_THRESHOLD)
         )
 
-        # Print signal table
+        # print signal table
         print(f"  [1] MA Crossover : {ma_dir:<4}  {_tick(True)}  "
               f"MA{SHORT_WINDOW}={ma_s:.2f} {'>' if ma_dir=='BUY' else '<'} MA{LONG_WINDOW}={ma_l:.2f}")
 
@@ -336,7 +323,7 @@ def run_strategy() -> None:
 
         all_ok = ma_ok and ml_ok and sent_ok
 
-        # ── BUY ───────────────────────────────────────────────────────────────
+        # BUY
         if ma_dir == "BUY" and all_ok and held_value < max_allowed:
             budget = min(max_allowed - held_value, max_spend(portfolio, current_prices))
             if budget >= price:
@@ -355,7 +342,7 @@ def run_strategy() -> None:
                 print(f"  └─ ✗ BUY confirmed but insufficient budget "
                       f"(${budget:.2f} < ${price:.2f})")
 
-        # ── SELL ──────────────────────────────────────────────────────────────
+        # SELL
         elif ma_dir == "SELL" and all_ok and held_shares > 0:
             proceeds = held_shares * price
             portfolio["cash"] += proceeds
@@ -368,7 +355,7 @@ def run_strategy() -> None:
             print(f"  └─ ► EXECUTE SELL  {held_shares} sh @ ${price:.2f}  "
                   f"proceeds=${proceeds:,.2f}  (all 3 signals confirmed)")
 
-        # ── BLOCKED ───────────────────────────────────────────────────────────
+        # blocked — print why
         else:
             blockers = []
             if not ml_ok:
@@ -386,7 +373,7 @@ def run_strategy() -> None:
 
     save_portfolio(portfolio)
 
-    # ── Portfolio snapshot ────────────────────────────────────────────────────
+    # portfolio snapshot
     total_now = portfolio_value(portfolio, current_prices)
     pnl       = total_now - STARTING_CASH
     pnl_pct   = pnl / STARTING_CASH * 100
@@ -406,7 +393,7 @@ def run_strategy() -> None:
     print(f"{'═'*W}\n")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# entry point
 
 if __name__ == "__main__":
     print("═" * 62)

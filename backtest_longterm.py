@@ -1,8 +1,4 @@
-"""
-backtest_longterm.py — MA10/MA30 Crossover over 10 years
-Universe : AAPL, MSFT, GOOGL, NVDA, AMZN, META, AMD, JPM, JNJ, WMT
-Benchmark: SPY buy-and-hold for the same period
-"""
+"""MA10/MA30 crossover backtest over 10 years vs SPY buy-and-hold."""
 
 import csv
 import math
@@ -11,7 +7,7 @@ import requests
 import pandas as pd
 import numpy as np
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# config
 TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "JPM", "JNJ", "WMT", "KO", "PG", "V"]
 BENCHMARK        = "SPY"
 STARTING_CASH    = 100_000.0
@@ -26,7 +22,7 @@ _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; backtest-lt/1.0)"})
 
 
-# ── Data fetching ──────────────────────────────────────────────────────────────
+# data fetching
 
 def fetch_daily(ticker: str, period: str = "10y") -> pd.DataFrame:
     url = (
@@ -47,7 +43,7 @@ def fetch_daily(ticker: str, period: str = "10y") -> pd.DataFrame:
     return df
 
 
-# ── MA signals ─────────────────────────────────────────────────────────────────
+# MA signals
 
 def add_ma_signals(df: pd.DataFrame) -> pd.DataFrame:
     df         = df.copy()
@@ -60,7 +56,7 @@ def add_ma_signals(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── Simulation ─────────────────────────────────────────────────────────────────
+# simulation
 
 def simulate(all_data: dict, common_dates: list) -> tuple[float, list, list]:
     cash       = STARTING_CASH
@@ -139,7 +135,7 @@ def simulate(all_data: dict, common_dates: list) -> tuple[float, list, list]:
         equity_now = sum(positions.get(t, 0) * prices.get(t, 0) for t in TICKERS)
         daily_vals.append(cash + equity_now)
 
-    # Liquidate at last close
+    # liquidate at last close
     end_date    = common_dates[-1]
     last_prices = {
         t: float(all_data[t].at[end_date, "Close"])
@@ -149,7 +145,7 @@ def simulate(all_data: dict, common_dates: list) -> tuple[float, list, list]:
     return final_value, trade_log, daily_vals
 
 
-# ── Metrics ────────────────────────────────────────────────────────────────────
+# metrics
 
 def compute_metrics(final_value: float, trade_log: list,
                     daily_vals: list, years: float) -> dict:
@@ -180,7 +176,7 @@ def compute_metrics(final_value: float, trade_log: list,
     )
 
 
-# ── Per-ticker stats ───────────────────────────────────────────────────────────
+# per-ticker breakdown
 
 def ticker_breakdown(trade_log: list, all_data: dict, common_dates: list) -> list:
     rows = []
@@ -190,7 +186,7 @@ def ticker_breakdown(trade_log: list, all_data: dict, common_dates: list) -> lis
         wins   = sum(1 for t in sells if float(t["pnl"]) > 0)
         pnl    = sum(float(t["pnl"]) for t in sells)
 
-        # Buy-and-hold return for this ticker over the common period
+        # buy-and-hold return for this ticker over the same period
         start = common_dates[0]
         end   = common_dates[-1]
         df    = all_data[ticker]
@@ -212,7 +208,7 @@ def ticker_breakdown(trade_log: list, all_data: dict, common_dates: list) -> lis
     return rows
 
 
-# ── Report ─────────────────────────────────────────────────────────────────────
+# report
 
 def print_report(m: dict, spy_ret: float, spy_final: float,
                  breakdown: list, start_date, end_date, years: float) -> None:
@@ -237,7 +233,6 @@ def print_report(m: dict, spy_ret: float, spy_final: float,
     print(f"  Starting Cash : {fd(STARTING_CASH)}")
     print(hr)
 
-    # Two-column header
     print(f"  {'Metric':<24}  {'Strategy':>20}  {'SPY Buy & Hold':>20}")
     print(f"  {'─'*22:<24}  {'─'*18:>20}  {'─'*14:>20}")
 
@@ -261,7 +256,7 @@ def print_report(m: dict, spy_ret: float, spy_final: float,
     print(f"  Verdict       : {verdict} SPY by {abs(alpha):.2f}%")
     print(hr)
 
-    # Per-ticker table
+    # per-ticker table
     print(f"  {'PER-TICKER BREAKDOWN':}")
     print(f"  {'Ticker':<6}  {'Trades':>6}  {'W':>4}  {'L':>4}  "
           f"{'Realized P&L':>14}  {'B&H Return':>12}  {'Strategy vs B&H':>16}")
@@ -271,7 +266,6 @@ def print_report(m: dict, spy_ret: float, spy_final: float,
     for r in breakdown:
         pnl_s  = f"+${r['pnl']:,.2f}" if r["pnl"] >= 0 else f"-${abs(r['pnl']):,.2f}"
         bah_s  = fp(r["bah_ret"]) if not math.isnan(r["bah_ret"]) else "—"
-        # Rough strategy-vs-BaH: just flag which delivered more for this ticker
         if not math.isnan(r["bah_ret"]):
             bah_dollar = STARTING_CASH / len(TICKERS) * (1 + r["bah_ret"] / 100)
             equal_share_pnl = bah_dollar - STARTING_CASH / len(TICKERS)
@@ -285,7 +279,7 @@ def print_report(m: dict, spy_ret: float, spy_final: float,
     print(HR)
 
 
-# ── CSV export ─────────────────────────────────────────────────────────────────
+# CSV export
 
 def save_csv(trade_log: list) -> None:
     fields = ["date", "action", "ticker", "shares", "price",
@@ -297,7 +291,7 @@ def save_csv(trade_log: list) -> None:
     print(f"  Saved {len(trade_log)} trades → {OUTPUT_CSV}\n")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# entry point
 
 def run():
     print("\nFetching 10 years of daily data…")
@@ -316,13 +310,11 @@ def run():
     spy = fetch_daily(BENCHMARK, period="10y")
     print(f"  {len(spy):>5} bars  ({spy.index[0].date()} → {spy.index[-1].date()})")
 
-    # Tickers that loaded successfully
     loaded = [t for t in TICKERS if t in all_data]
     if not loaded:
         print("No data loaded. Exiting.")
         return
 
-    # Common trading days across all loaded tickers
     common_dates = sorted(
         set.intersection(*[set(all_data[t].index) for t in loaded])
     )

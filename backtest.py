@@ -1,10 +1,4 @@
-"""
-backtest.py — Strategy comparison
-Runs three scenarios side-by-side over the same 2-year period:
-  1. MA Crossover only  (MA10 / MA30)
-  2. MA Crossover + ML  (trade only when both signals agree)
-  3. SPY buy-and-hold   (benchmark)
-"""
+"""Runs three scenarios side-by-side over 2 years: MA-only, MA+ML, MA+ML+slippage."""
 
 import csv
 import math
@@ -15,7 +9,7 @@ import requests
 import pandas as pd
 import numpy as np
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# config
 TICKERS          = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "JPM", "JNJ", "WMT", "KO", "V"]
 BENCHMARK        = "SPY"
 STARTING_CASH    = 100_000.0
@@ -24,7 +18,7 @@ LONG_WINDOW      = 30
 MAX_POSITION_PCT = 0.20
 CASH_BUFFER_PCT  = 0.05
 RISK_FREE_ANNUAL = 0.04
-SLIPPAGE         = 0.001   # 0.1% per fill — applied to BUY and SELL price
+SLIPPAGE         = 0.001   # 0.1% per fill
 MODEL_FILE       = "model.pkl"
 CSV_MA           = "backtest_results.csv"
 CSV_COMBINED     = "backtest_results_combined.csv"
@@ -34,10 +28,10 @@ _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; backtest/1.0)"})
 
 
-# ── Data fetching ──────────────────────────────────────────────────────────────
+# data fetching
 
 def fetch_daily(ticker: str) -> pd.DataFrame:
-    """Fetch 2 years of daily Close + Volume from Yahoo Finance."""
+    """2 years of daily Close + Volume from Yahoo Finance."""
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         f"?interval=1d&range=2y"
@@ -56,7 +50,7 @@ def fetch_daily(ticker: str) -> pd.DataFrame:
     return df
 
 
-# ── MA signal computation ──────────────────────────────────────────────────────
+# MA signals
 
 def add_ma_signals(df: pd.DataFrame) -> pd.DataFrame:
     df         = df.copy()
@@ -64,19 +58,15 @@ def add_ma_signals(df: pd.DataFrame) -> pd.DataFrame:
     df["MA_l"] = df["Close"].rolling(LONG_WINDOW).mean()
     above      = df["MA_s"] > df["MA_l"]
     prev       = above.shift(1).fillna(False)
-    df["buy"]  = (~prev) & above     # crossed UP
-    df["sell"] = prev & (~above)     # crossed DOWN
+    df["buy"]  = (~prev) & above     # crossed up
+    df["sell"] = prev & (~above)     # crossed down
     return df
 
 
-# ── ML prediction precomputation ───────────────────────────────────────────────
+# ML predictions
 
 def load_ml_predictions(all_data: dict) -> dict[str, pd.Series]:
-    """
-    Load model.pkl and run predictions over every date in all_data.
-    Returns { ticker: pd.Series(index=dates, values=0/1) }
-    ML prediction of 1 = UP tomorrow, 0 = DOWN tomorrow.
-    """
+    """Load model.pkl and return per-ticker prediction series (1=UP, 0=DOWN)."""
     if not os.path.exists(MODEL_FILE):
         print(f"  WARNING: {MODEL_FILE} not found — run ml_model.py first.")
         print("  Continuing with MA-only backtest.\n")
@@ -106,7 +96,7 @@ def load_ml_predictions(all_data: dict) -> dict[str, pd.Series]:
     return preds
 
 
-# ── Simulation engine ──────────────────────────────────────────────────────────
+# simulation engine
 
 def simulate(
     all_data: dict,
@@ -117,16 +107,13 @@ def simulate(
     """
     Run one backtest pass.
 
-    ml_preds=None   → MA-only strategy
-    ml_preds=dict   → combined: trade only when MA signal AND ML agree
-    slippage=0.001  → 0.1% worse fill price on every BUY and SELL
+    ml_preds=None  → MA-only
+    ml_preds=dict  → trade only when MA and ML agree
+    slippage=0.001 → 0.1% worse fill on every BUY and SELL
 
-    Slippage mechanics:
-      BUY  fill = market_price * (1 + slippage)  — you pay more
-      SELL fill = market_price * (1 - slippage)  — you receive less
-
-    Portfolio valuation always uses the raw market price (not fill price)
-    so daily P&L reflects true mark-to-market. Only cash flows are affected.
+    BUY fill  = price * (1 + slippage)  — pay more
+    SELL fill = price * (1 - slippage)  — receive less
+    Portfolio value always uses raw market price, not fill price.
 
     Returns (final_value, trade_log, daily_values, total_slippage_cost).
     """
@@ -143,7 +130,7 @@ def simulate(
             t: float(all_data[t].at[date, "Close"])
             for t in TICKERS if date in all_data[t].index
         }
-        # Value positions at market price (not fill price)
+        # value positions at market price (not fill price)
         equity = sum(positions.get(t, 0) * prices.get(t, 0) for t in TICKERS)
         total  = cash + equity
 
@@ -170,17 +157,17 @@ def simulate(
                 else:
                     ml_up = ml_down = False
 
-            # ── BUY ───────────────────────────────────────────────────────────
+            # BUY
             if row["buy"] and hval < total * MAX_POSITION_PCT and ml_up:
                 budget = min(
                     total * MAX_POSITION_PCT - hval,
                     cash - total * CASH_BUFFER_PCT,
                 )
-                fill_price  = price * (1 + slippage)   # pay more when buying
+                fill_price  = price * (1 + slippage)
                 slip_cost   = price * slippage
                 if budget >= fill_price:
                     n           = int(budget // fill_price)
-                    cost        = n * fill_price          # actual cash out
+                    cost        = n * fill_price
                     slip_total  = n * slip_cost
                     total_slip_cost += slip_total
                     cash       -= cost
@@ -203,9 +190,9 @@ def simulate(
                         "pnl":          "",
                     })
 
-            # ── SELL ──────────────────────────────────────────────────────────
+            # SELL
             elif row["sell"] and held > 0 and ml_down:
-                fill_price  = price * (1 - slippage)   # receive less when selling
+                fill_price  = price * (1 - slippage)
                 slip_cost   = price * slippage
                 proceeds    = held * fill_price
                 slip_total  = held * slip_cost
@@ -232,7 +219,7 @@ def simulate(
         equity_now = sum(positions.get(t, 0) * prices.get(t, 0) for t in TICKERS)
         daily_vals.append(cash + equity_now)
 
-    # Liquidate at last close (no slippage on final liquidation — notional)
+    # liquidate at last close (no slippage — notional)
     end_date    = common_dates[-1]
     last_prices = {
         t: float(all_data[t].at[end_date, "Close"])
@@ -243,7 +230,7 @@ def simulate(
     return final_value, trade_log, daily_vals, round(total_slip_cost, 2)
 
 
-# ── Metrics ────────────────────────────────────────────────────────────────────
+# metrics
 
 def compute_metrics(final_value: float, trade_log: list, daily_vals: list,
                     years: float, slippage_cost: float = 0.0) -> dict:
@@ -267,7 +254,7 @@ def compute_metrics(final_value: float, trade_log: list, daily_vals: list,
     buys_n     = sum(1 for t in trade_log if t["action"] == "BUY")
     sells_n    = sum(1 for t in trade_log if t["action"] == "SELL")
 
-    # Per-ticker P&L
+    # per-ticker P&L
     ticker_pnl = {}
     for ticker in TICKERS:
         t_sells = [t for t in sells if t["ticker"] == ticker]
@@ -290,7 +277,7 @@ def compute_metrics(final_value: float, trade_log: list, daily_vals: list,
     )
 
 
-# ── Reporting ──────────────────────────────────────────────────────────────────
+# reporting
 
 def print_comparison(ma: dict, combo: dict, combo_slip: dict,
                      spy_ret: float, spy_final: float,
@@ -305,7 +292,6 @@ def print_comparison(ma: dict, combo: dict, combo_slip: dict,
     def fd(v):
         return f"${v:,.2f}"
 
-    # Four-column row helper
     def row(label, c1, c2, c3, c4="—"):
         print(f"  {label:<26}  {c1:>13}  {c2:>13}  {c3:>13}  {c4:>11}")
 
@@ -364,7 +350,7 @@ def print_comparison(ma: dict, combo: dict, combo_slip: dict,
     slip_alpha    = combo_slip["total_ret"] - spy_ret
     row("Alpha vs SPY", fp(ma_alpha), fp(combo_alpha), fp(slip_alpha), "+0.00%")
 
-    # ── Slippage impact section ────────────────────────────────────────────────
+    # slippage impact
     print(hr)
     print(f"  SLIPPAGE IMPACT  (0.1% per fill)")
     print(hr)
@@ -385,13 +371,13 @@ def print_comparison(ma: dict, combo: dict, combo_slip: dict,
     print(f"  {'Avg slippage per trade':<34}  ${avg_per_trade:>10,.2f}")
     print(f"  {'Avg cost per round trip (2 fills)':<34}  ${avg_per_trade*2:>10,.2f}")
 
-    # Break-even check: does slippage flip the alpha?
+    # does slippage flip our alpha?
     print(hr)
     still_beats_spy = combo_slip["total_ret"] > spy_ret
     print(f"  MA+ML still beats SPY after slippage?  "
           f"{'YES  (' + fp(slip_alpha) + ' alpha)' if still_beats_spy else 'NO   (' + fp(slip_alpha) + ' alpha)'}")
 
-    # Per-ticker P&L (no-slip vs with-slip on combo)
+    # per-ticker P&L comparison
     print(hr)
     print(f"  PER-TICKER  —  MA+ML  (no slippage vs 0.1% slippage)")
     print(f"  {'Ticker':<8}  {'No Slip':>14}  {'With Slip':>14}  {'Slip Cost':>12}  {'Drag':>8}")
@@ -401,8 +387,6 @@ def print_comparison(ma: dict, combo: dict, combo_slip: dict,
         pnl_c  = combo["ticker_pnl"].get(ticker, 0)
         pnl_s  = combo_slip["ticker_pnl"].get(ticker, 0)
         drag   = pnl_c - pnl_s
-        # Estimate per-ticker slippage from trade log isn't tracked separately,
-        # so show realized P&L difference as proxy for slippage drag
         s1 = f"+${pnl_c:,.2f}" if pnl_c >= 0 else f"-${abs(pnl_c):,.2f}"
         s2 = f"+${pnl_s:,.2f}" if pnl_s >= 0 else f"-${abs(pnl_s):,.2f}"
         s3 = f"${drag:,.2f}"
@@ -413,12 +397,12 @@ def print_comparison(ma: dict, combo: dict, combo_slip: dict,
     print(f"        Use walk-forward validation for production-grade evaluation.\n")
 
 
-# ── CSV export ─────────────────────────────────────────────────────────────────
+# CSV export
 
 def save_csv(trade_log: list, path: str) -> None:
     fields = ["date", "action", "ticker", "shares", "price", "fill_price",
               "value", "slippage_cost", "ma_short", "ma_long", "pnl"]
-    # Back-fill missing keys for logs that predate the slippage columns
+    # back-fill keys for logs that predate slippage columns
     for row in trade_log:
         row.setdefault("fill_price",    row.get("price", ""))
         row.setdefault("slippage_cost", 0.0)
@@ -429,7 +413,7 @@ def save_csv(trade_log: list, path: str) -> None:
     print(f"  Saved {len(trade_log):>3} trades → {path}")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# entry point
 
 def run_backtest():
     print("\nFetching 2 years of daily data…")
@@ -459,7 +443,6 @@ def run_backtest():
     spy_ret_pct = (spy_e - spy_s) / spy_s * 100
     spy_final   = STARTING_CASH * (spy_e / spy_s)
 
-    # Load ML predictions
     print("\nLoading ML model…")
     ml_preds = load_ml_predictions(all_data)
     if ml_preds:
@@ -468,7 +451,7 @@ def run_backtest():
     else:
         print("  Running MA-only (no ML model available).")
 
-    # ── Run all three simulations ──────────────────────────────────────────────
+    # run all three scenarios
     print("\nRunning MA-only            (0% slip)…", end="  ", flush=True)
     ma_final, ma_trades, ma_daily, _ = simulate(
         all_data, common_dates, ml_preds=None, slippage=0.0)
@@ -484,17 +467,16 @@ def run_backtest():
         all_data, common_dates, ml_preds=ml_preds, slippage=SLIPPAGE)
     print(f"done  ({len(slip_trades)} trades)  total slippage=${slip_cost:,.2f}")
 
-    # ── Compute metrics ────────────────────────────────────────────────────────
+    # compute metrics
     ma_m    = compute_metrics(ma_final,    ma_trades,    ma_daily,    years)
     combo_m = compute_metrics(combo_final, combo_trades, combo_daily, years)
     slip_m  = compute_metrics(slip_final,  slip_trades,  slip_daily,  years,
                               slippage_cost=slip_cost)
 
-    # ── Print report ───────────────────────────────────────────────────────────
     print_comparison(ma_m, combo_m, slip_m, spy_ret_pct, spy_final,
                      start_date.date(), end_date.date(), years)
 
-    # ── Save CSVs ──────────────────────────────────────────────────────────────
+    # save CSVs
     save_csv(ma_trades,   CSV_MA)
     save_csv(combo_trades, CSV_COMBINED)
     save_csv(slip_trades,  CSV_SLIP)

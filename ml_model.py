@@ -1,16 +1,10 @@
-"""
-ml_model.py — Random Forest direction classifier
-Predicts: will tomorrow's close be higher (1) or lower (0) than today's?
-
-Trained separately for each ticker on 2 years of daily data.
-Saved to model.pkl as { ticker: model, "features": [...] }
-so bot.py can load and call model.predict(features).
-"""
+"""Random Forest classifier: will tomorrow's close be higher (1) or lower (0)?
+Trained per-ticker on 2y of daily data. Saves to model.pkl."""
 
 import subprocess
 import sys
 
-# ── Auto-install scikit-learn if missing ───────────────────────────────────────
+# auto-install scikit-learn if needed
 try:
     import sklearn
 except ImportError:
@@ -26,7 +20,7 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, classification_report,
 )
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+# config
 TICKERS      = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "JPM", "JNJ", "WMT", "KO", "V"]
 MODEL_FILE   = "model.pkl"
 TRAIN_RATIO  = 0.80
@@ -34,26 +28,26 @@ RF_PARAMS    = dict(n_estimators=300, max_depth=6, min_samples_leaf=5,
                     random_state=42, n_jobs=-1)
 
 FEATURE_COLS = [
-    "ma10_ratio",       # MA10 / close  (price relative to short MA)
+    "ma10_ratio",       # MA10 / close
     "ma30_ratio",       # MA30 / close
     "ma50_ratio",       # MA50 / close
-    "ma10_ma30",        # MA10 / MA30   (crossover proximity)
+    "ma10_ma30",        # MA10 / MA30 (crossover proximity)
     "ma30_ma50",        # MA30 / MA50
     "rsi14",            # RSI 14-period
-    "volume_change",    # % change in volume vs previous day
-    "volume_ma10",      # volume / MA10-volume  (relative volume)
+    "volume_change",    # % change in volume vs yesterday
+    "volume_ma10",      # volume / 10-day avg volume
     "momentum10",       # raw 10-day price momentum
-    "roc5",             # 5-day rate of change  (%)
+    "roc5",             # 5-day rate of change (%)
     "roc10",            # 10-day rate of change (%)
     "roc20",            # 20-day rate of change (%)
-    "volatility10",     # rolling 10-day std of daily returns
+    "volatility10",     # 10-day rolling std of daily returns
 ]
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; ml-bot/1.0)"})
 
 
-# ── Data fetching ──────────────────────────────────────────────────────────────
+# data fetching
 
 def fetch_daily(ticker: str) -> pd.DataFrame:
     url = (
@@ -74,7 +68,7 @@ def fetch_daily(ticker: str) -> pd.DataFrame:
     return df
 
 
-# ── Feature engineering ────────────────────────────────────────────────────────
+# feature engineering
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     close  = df["Close"]
@@ -82,7 +76,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     f = pd.DataFrame(index=df.index)
 
-    # Moving average ratios (normalised — comparable across tickers & time)
+    # MA ratios — normalized so they're comparable across tickers and time
     ma10 = close.rolling(10).mean()
     ma30 = close.rolling(30).mean()
     ma50 = close.rolling(50).mean()
@@ -92,35 +86,35 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     f["ma10_ma30"]  = ma10 / ma30
     f["ma30_ma50"]  = ma30 / ma50
 
-    # RSI-14
+    # RSI-14 (Wilder smoothing via EWM)
     delta    = close.diff()
     gain     = delta.clip(lower=0)
     loss     = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(com=13, adjust=False).mean()   # Wilder smoothing
+    avg_gain = gain.ewm(com=13, adjust=False).mean()
     avg_loss = loss.ewm(com=13, adjust=False).mean()
     rs       = avg_gain / avg_loss.replace(0, 1e-10)
     f["rsi14"] = 100 - (100 / (1 + rs))
 
-    # Volume
+    # volume
     f["volume_change"] = volume.pct_change()
     f["volume_ma10"]   = volume / volume.rolling(10).mean()
 
-    # Momentum & rate of change
+    # momentum and rate of change
     f["momentum10"] = close - close.shift(10)
     f["roc5"]       = close.pct_change(5)  * 100
     f["roc10"]      = close.pct_change(10) * 100
     f["roc20"]      = close.pct_change(20) * 100
 
-    # Volatility (10-day rolling std of daily returns)
+    # volatility
     f["volatility10"] = close.pct_change().rolling(10).std()
 
-    # Target: 1 if next day close > today (predict tomorrow's direction)
+    # target: 1 if tomorrow's close > today's
     f["target"] = (close.shift(-1) > close).astype(int)
 
     return f
 
 
-# ── Train one model ────────────────────────────────────────────────────────────
+# training
 
 def train_ticker(ticker: str, raw: pd.DataFrame) -> tuple:
     feat = build_features(raw).dropna()
@@ -128,7 +122,7 @@ def train_ticker(ticker: str, raw: pd.DataFrame) -> tuple:
     X = feat[FEATURE_COLS]
     y = feat["target"]
 
-    # Chronological split — no shuffling, preserves time order
+    # chronological split — no shuffling, preserves time order
     split    = int(len(X) * TRAIN_RATIO)
     X_train  = X.iloc[:split]
     X_test   = X.iloc[split:]
@@ -142,7 +136,7 @@ def train_ticker(ticker: str, raw: pd.DataFrame) -> tuple:
     return model, X_train, X_test, y_train, y_test, y_pred, feat
 
 
-# ── Reporting ──────────────────────────────────────────────────────────────────
+# reporting
 
 def print_ticker_report(ticker, X_train, X_test, y_test, y_pred, model):
     acc  = accuracy_score(y_test, y_pred)
@@ -169,7 +163,7 @@ def print_ticker_report(ticker, X_train, X_test, y_test, y_pred, model):
     for line in report.splitlines():
         print(f"    {line}")
 
-    # Top-5 feature importances
+    # top 5 features
     importances = pd.Series(model.feature_importances_, index=FEATURE_COLS)
     top5        = importances.sort_values(ascending=False).head(5)
     print(f"\n  Top-5 features — {ticker}")
@@ -178,7 +172,7 @@ def print_ticker_report(ticker, X_train, X_test, y_test, y_pred, model):
         print(f"    {feat_name:<20}  {imp:.4f}  {bar}")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# entry point
 
 def main():
     W = 62
@@ -212,7 +206,7 @@ def main():
         print("done")
         print_ticker_report(ticker, X_train, X_test, y_test, y_pred, model)
 
-    # ── Summary table ──────────────────────────────────────────────────────────
+    # summary table
     print(f"\n\n{'═'*W}")
     print("  SUMMARY")
     print(f"{'═'*W}")
@@ -230,7 +224,7 @@ def main():
 
     print(f"{'═'*W}")
 
-    # ── Save ───────────────────────────────────────────────────────────────────
+    # save
     joblib.dump(trained_models, MODEL_FILE)
     print(f"\n  Model saved → {MODEL_FILE}")
     print(f"  Load in bot.py with:  models = joblib.load('{MODEL_FILE}')")

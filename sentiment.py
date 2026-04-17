@@ -1,15 +1,4 @@
-"""
-sentiment.py — Finnhub News Sentiment
-Returns a score from -1.0 (very bearish) to +1.0 (very bullish) for a ticker.
-
-Endpoint : GET /api/v1/news-sentiment?symbol=AAPL&token=...
-Free tier : 60 requests/minute — no daily cap.
-
-Score formula: bullishPercent - bearishPercent
-  e.g. 70% bullish, 30% bearish → 0.70 - 0.30 = +0.40
-
-Results are cached for 30 minutes so the bot doesn't spam the API.
-"""
+"""Finnhub news sentiment. Returns -1 to +1 score for a ticker. Cached 30 min."""
 
 import os
 import time
@@ -18,34 +7,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── API key ────────────────────────────────────────────────────────────────────
-# Set FINNHUB_KEY in .env (or as a shell environment variable).
+# set FINNHUB_KEY in .env
 FINNHUB_KEY = os.getenv("FINNHUB_KEY", "YOUR_KEY_HERE")
 
-# ── Thresholds (consumed by bot.py) ───────────────────────────────────────────
-BUY_THRESHOLD  =  0.2   # sentiment must be above this to allow a BUY
-SELL_THRESHOLD = -0.2   # sentiment must be below this to allow a SELL
+# score thresholds used by bot.py
+BUY_THRESHOLD  =  0.2
+SELL_THRESHOLD = -0.2
 
-# ── Cache ──────────────────────────────────────────────────────────────────────
+# cache
 _cache: dict[str, tuple[float, float]] = {}   # ticker -> (score, fetched_at)
-CACHE_TTL = 30 * 60                           # 30 minutes
+CACHE_TTL = 30 * 60
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; sentiment-bot/1.0)"})
 
 
-# ── Core fetch ─────────────────────────────────────────────────────────────────
-
 def _fetch_from_api(ticker: str) -> float:
-    """
-    Call Finnhub /news-sentiment and return a -1 to +1 score.
-
-    Response fields we use:
-      sentiment.bullishPercent  — fraction of bullish articles  (0–1)
-      sentiment.bearishPercent  — fraction of bearish articles  (0–1)
-
-    score = bullishPercent - bearishPercent
-    """
+    """Hit Finnhub /news-sentiment, return bullish% - bearish% as a -1 to +1 score."""
     if FINNHUB_KEY == "YOUR_KEY_HERE":
         print(f"  [sentiment:{ticker}] WARNING: No API key set — returning neutral 0.0")
         return 0.0
@@ -61,7 +39,7 @@ def _fetch_from_api(ticker: str) -> float:
         print(f"  [sentiment:{ticker}] Request error: {e}")
         return 0.0
 
-    # Finnhub returns an empty object {} when the symbol isn't covered
+    # empty dict means Finnhub doesn't cover this symbol
     if not data or "sentiment" not in data:
         print(f"  [sentiment:{ticker}] No sentiment data — keys returned: {list(data.keys())}")
         return 0.0
@@ -80,19 +58,8 @@ def _fetch_from_api(ticker: str) -> float:
     return score
 
 
-# ── Public interface ───────────────────────────────────────────────────────────
-
 def get_sentiment(ticker: str) -> float:
-    """
-    Return the sentiment score for ticker, served from a 30-minute cache.
-
-    Score interpretation:
-      >  0.2  → bullish  (BUY allowed)
-      ± 0.2   → neutral  (no trade)
-      < -0.2  → bearish  (SELL allowed)
-
-    Returns 0.0 on any error so the bot fails safe.
-    """
+    """Return cached or fresh sentiment score. Returns 0.0 on any error."""
     now = time.time()
 
     if ticker in _cache:
@@ -117,8 +84,6 @@ def _label(score: float) -> str:
     if score >  -0.5: return "Somewhat-Bearish"
     return "BEARISH"
 
-
-# ── Quick test ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
